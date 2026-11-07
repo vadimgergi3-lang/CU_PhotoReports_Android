@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 import traceback
@@ -37,8 +38,12 @@ os.makedirs(APP_DIR, exist_ok=True)
 WORK_DIR = os.path.join(APP_DIR, "work")
 OUT_DIR = os.path.join(APP_DIR, "out")
 STATE_FILE = os.path.join(APP_DIR, "last_state.json")
+# Каталог черновиков — каждый незавершённый отчёт хранится отдельно,
+# имя файла ссылается на № отчёта (ref). Можно вернуться и продолжить любой.
+DRAFTS_DIR = os.path.join(APP_DIR, "drafts")
 os.makedirs(WORK_DIR, exist_ok=True)
 os.makedirs(OUT_DIR, exist_ok=True)
+os.makedirs(DRAFTS_DIR, exist_ok=True)
 
 # Каталог с кодом (на Android рядом с main.py)
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -79,6 +84,8 @@ def save_state(data: dict) -> None:
             json.dump(slim, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
+    # Параллельно сохраняем именованный черновик (по № отчёта).
+    save_draft(data)
 
 
 def load_state() -> dict | None:
@@ -111,6 +118,124 @@ def clear_state() -> None:
     try:
         if os.path.isfile(STATE_FILE):
             os.remove(STATE_FILE)
+    except Exception:
+        pass
+
+
+# -------------------------------------------------------------------------
+# Черновики незавершённых отчётов (можно вернуться к любому)
+# Каждый черновик — отдельный JSON, имя файла по № отчёта (ref).
+# Фото лежат в WORK_DIR/<session> и переживают перезапуск приложения.
+# -------------------------------------------------------------------------
+def _safe_ref(ref: str) -> str:
+    """Превращает № отчёта в безопасное имя файла."""
+    s = (ref or "").strip()
+    s = re.sub(r'[\\/:*?"<>|]+', "-", s)
+    s = re.sub(r"\s+", "_", s)
+    return s[:80]
+
+
+def _draft_target(data: dict) -> str:
+    ref = (data.get("meta") or {}).get("report_no", "")
+    base = _safe_ref(ref)
+    if not base:
+        base = "draft_" + (data.get("draft_id") or uuid.uuid4().hex[:8])
+    return os.path.join(DRAFTS_DIR, base + ".json")
+
+
+def save_draft(data: dict) -> None:
+    """Сохраняет/обновляет черновик текущего отчёта по №."""
+    try:
+        if not data.get("template_key"):
+            return  # нечего сохранять, шаблон ещё не выбран
+        if not data.get("draft_id"):
+            data["draft_id"] = uuid.uuid4().hex[:8]
+        target = _draft_target(data)
+        old = data.get("draft_file")
+        slim = {
+            "draft_id": data.get("draft_id"),
+            "template_key": data.get("template_key"),
+            "meta": data.get("meta"),
+            "containers": data.get("containers"),
+            "index": data.get("index", 0),
+            "session_dir": data.get("session_dir"),
+            "photos": data.get("photos", {}),
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        }
+        os.makedirs(DRAFTS_DIR, exist_ok=True)
+        with open(target, "w", encoding="utf-8") as f:
+            json.dump(slim, f, ensure_ascii=False, indent=2)
+        # если № отчёта изменился — удаляем старый файл, чтобы не плодить дубли
+        if old and old != target and os.path.isfile(old):
+            try:
+                os.remove(old)
+            except Exception:
+                pass
+        data["draft_file"] = target
+    except Exception:
+        pass
+
+
+def load_draft(path: str) -> dict:
+    """Загружает черновик в полное состояние приложения."""
+    with open(path, "r", encoding="utf-8") as f:
+        slim = json.load(f)
+    key = slim.get("template_key")
+    if key not in config.TEMPLATES:
+        raise ValueError("Шаблон отчёта не найден")
+    tpl = config.TEMPLATES[key]
+    containers = slim.get("containers") or []
+    slots = build_slots(tpl, containers)
+    photos = {k: v for k, v in (slim.get("photos") or {}).items() if os.path.isfile(v)}
+    return {
+        "template_key": key,
+        "meta": slim.get("meta") or dict(tpl["meta"]),
+        "containers": containers,
+        "slots": slots,
+        "photos": photos,
+        "index": slim.get("index", 0),
+        "session_dir": slim.get("session_dir") or _new_session_dir(),
+        "draft_id": slim.get("draft_id") or uuid.uuid4().hex[:8],
+        "draft_file": path,
+    }
+
+
+def list_drafts() -> list:
+    """Список всех черновиков (для экрана «Продолжить»)."""
+    out = []
+    if not os.path.isdir(DRAFTS_DIR):
+        return out
+    for fn in os.listdir(DRAFTS_DIR):
+        if not fn.endswith(".json"):
+            continue
+        p = os.path.join(DRAFTS_DIR, fn)
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                slim = json.load(f)
+            key = slim.get("template_key")
+            tpl = config.TEMPLATES.get(key, {})
+            containers = slim.get("containers") or []
+            slots = build_slots(tpl, containers) if tpl else []
+            photos = slim.get("photos") or {}
+            filled = sum(1 for s in slots if os.path.isfile(photos.get(s["id"], "")))
+            out.append({
+                "path": p,
+                "ref": (slim.get("meta") or {}).get("report_no", "") or "(без номера)",
+                "title": tpl.get("title", key or "—"),
+                "filled": filled,
+                "total": len(slots),
+                "updated_at": slim.get("updated_at", ""),
+            })
+        except Exception:
+            continue
+    out.sort(key=lambda d: d.get("updated_at", ""), reverse=True)
+    return out
+
+
+def delete_draft(path: str) -> None:
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
     except Exception:
         pass
 
@@ -367,6 +492,10 @@ class StartScreen(BaseScreen):
         btn_cont.bind(on_release=self._continue)
         root.add_widget(btn_cont)
 
+        btn_drafts = styled_btn("Продолжить сохранённый отчёт", (0.2, 0.45, 0.6, 1))
+        btn_drafts.bind(on_release=self._drafts)
+        root.add_widget(btn_drafts)
+
         btn_resume = styled_btn("Восстановить последний", (0.4, 0.4, 0.45, 1))
         btn_resume.bind(on_release=self._resume)
         root.add_widget(btn_resume)
@@ -420,6 +549,10 @@ class StartScreen(BaseScreen):
                 self._alert(f"Ошибка: {e}")
 
         pick_docx(on_sel)
+
+    def _drafts(self, *_):
+        self.manager.transition = SlideTransition(direction="left")
+        self.manager.current = "drafts"
 
     def _resume(self, *_):
         st = load_state()
@@ -934,6 +1067,106 @@ class ResultScreen(BaseScreen):
         self.manager.current = "start"
 
 
+class DraftsScreen(BaseScreen):
+    """Список сохранённых отчётов — можно продолжить любой по №."""
+    def __init__(self, **kw):
+        super().__init__(name="drafts", **kw)
+        root = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(8))
+        root.add_widget(title_label("Сохранённые отчёты"))
+        root.add_widget(info_label(
+            "Выберите отчёт, чтобы продолжить. Имя = № отчёта (ref)."
+        ))
+
+        scroll = ScrollView()
+        self.grid = GridLayout(cols=1, spacing=dp(8), size_hint_y=None, padding=dp(4))
+        self.grid.bind(minimum_height=self.grid.setter("height"))
+        scroll.add_widget(self.grid)
+        root.add_widget(scroll)
+
+        back = styled_btn("← Назад", (0.45, 0.45, 0.5, 1))
+        back.bind(on_release=lambda *_: setattr(self.manager, "current", "start"))
+        root.add_widget(back)
+        self.add_widget(root)
+
+    def on_enter(self, *_):
+        self._refresh()
+
+    def _refresh(self):
+        self.grid.clear_widgets()
+        drafts = list_drafts()
+        if not drafts:
+            self.grid.add_widget(info_label("Нет сохранённых отчётов."))
+            return
+        for d in drafts:
+            row = BoxLayout(size_hint_y=None, height=dp(66), spacing=dp(6))
+            txt = (
+                f"[b]{d['ref']}[/b]\n"
+                f"{d['title']}  ·  {d['filled']}/{d['total']} фото"
+                + (f"  ·  {d['updated_at']}" if d['updated_at'] else "")
+            )
+            btn = Button(
+                text=txt, markup=True, size_hint_y=None, height=dp(66),
+                background_normal="", background_color=PRIMARY, color=(1, 1, 1, 1),
+                halign="left", valign="middle", font_size=13, text_size=(None, None),
+            )
+            btn.bind(size=lambda b, *_: setattr(b, "text_size", (b.width - dp(12), None)))
+            btn.bind(on_release=lambda _, p=d["path"]: self._open(p))
+
+            delb = Button(
+                text="✕", size_hint=(None, None), width=dp(48), height=dp(66),
+                background_normal="", background_color=(0.6, 0.3, 0.3, 1),
+                color=(1, 1, 1, 1), bold=True,
+            )
+            delb.bind(on_release=lambda _, p=d["path"], r=d["ref"]: self._confirm_delete(p, r))
+
+            row.add_widget(btn)
+            row.add_widget(delb)
+            self.grid.add_widget(row)
+
+    def _open(self, path):
+        try:
+            data = load_draft(path)
+        except Exception as e:
+            self._alert(f"Не удалось открыть:\n{e}")
+            return
+        self.app.data = data
+        save_state(data)
+        self.manager.transition = SlideTransition(direction="left")
+        if not data.get("containers"):
+            self.manager.current = "meta"
+        else:
+            self.manager.current = "collect"
+
+    def _confirm_delete(self, path, ref):
+        content = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(8))
+        content.add_widget(Label(text=f"Удалить отчёт\n{ref}?", text_size=(dp(260), None)))
+        row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
+        yes = styled_btn("Удалить", (0.6, 0.3, 0.3, 1), height=dp(44))
+        no = styled_btn("Отмена", (0.45, 0.45, 0.5, 1), height=dp(44))
+        row.add_widget(yes)
+        row.add_widget(no)
+        content.add_widget(row)
+        popup = Popup(title="Подтверждение", content=content, size_hint=(0.85, None), height=dp(210))
+
+        def _yes(*_):
+            delete_draft(path)
+            popup.dismiss()
+            self._refresh()
+
+        yes.bind(on_release=_yes)
+        no.bind(on_release=popup.dismiss)
+        popup.open()
+
+    def _alert(self, text):
+        content = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(8))
+        content.add_widget(Label(text=text, text_size=(dp(280), None)))
+        btn = styled_btn("OK", height=dp(40))
+        content.add_widget(btn)
+        popup = Popup(title="Сообщение", content=content, size_hint=(0.85, None), height=dp(180))
+        btn.bind(on_release=popup.dismiss)
+        popup.open()
+
+
 class FotoReportApp(App):
     def build(self):
         self.title = "CONTROL UNION — Фото-отчёты"
@@ -946,6 +1179,7 @@ class FotoReportApp(App):
 
         sm = ScreenManager(transition=SlideTransition())
         sm.add_widget(StartScreen())
+        sm.add_widget(DraftsScreen())
         sm.add_widget(TemplateScreen())
         sm.add_widget(MetaScreen())
         sm.add_widget(ContainersScreen())

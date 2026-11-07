@@ -31,7 +31,17 @@ android.accept_sdk_license = True
 android.permissions = INTERNET,ACCESS_NETWORK_STATE,CAMERA,READ_MEDIA_IMAGES,READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE,POST_NOTIFICATIONS
 
 android.wakelock = False
-p4a.branch = master
+
+# Закрепляем проверенную связку тулчейна.
+# p4a-master + NDK r28c ломают нативные рецепты (libffi/libxml2/lxml) на шаге create.
+# NDK r25b + стабильный p4a — официально поддерживаемая для kivy 2.3.0 + api 34.
+android.ndk = 25b
+p4a.branch = v2024.01.21
+
+# Локальные рецепты (переопределяют штатные).
+# libffi — берём release-тарбол с готовым configure, чтобы не запускать
+# autoreconf (падал на LT_SYS_SYMBOL_USCORE).
+p4a.local_recipes = ./p4a-recipes
 
 # Иконка (если есть)
 # android.icon.filename = %(source.dir)s/assets/logo.png

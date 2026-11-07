@@ -1,28 +1,48 @@
 """
-Локальный p4a-рецепт libffi — обход ошибки сборки:
+Самодостаточный локальный рецепт libffi — полностью заменяет штатный.
 
-    configure.ac:215: error: possibly undefined macro: LT_SYS_SYMBOL_USCORE
-    autoreconf: error: /usr/bin/autoconf failed with exit status: 1
+Почему не наследуемся от pythonforandroid.recipes.libffi:
+при загрузке local-recipes p4a регистрирует этот файл под именем
+`pythonforandroid.recipes.libffi`, и `from ... import ...` превращается в самоимпорт —
+штатный класс не находится, и p4a тихо откатывается к стандартному
+рецепту (git-архив → autogen.sh → autoreconf → падение на LT_SYS_SYMBOL_USCORE).
 
-Причина: штатный рецепт берёт git-архив libffi без готового `configure`,
-поэтому запускает autogen.sh/autoreconf. На Ubuntu 24.04 (libtool 2.4.7)
-autoreconf не находит макрос LT_SYS_SYMBOL_USCORE, и сборка падает.
-
-Решение: тянем официальный release-тарбол libffi, в котором `configure` уже
-сгенерирован. Тогда рецепт пропускает autogen.sh и autoreconf вообще не
-вызывается — макрос больше не нужен.
+Решение: тянем официальный release-тарбол libffi (в нём `configure` уже
+сгенерирован), поэтому autogen.sh/autoreconf не запускаются вообще.
 """
-from pythonforandroid.recipes.libffi import LibffiRecipe as _LibffiRecipe
+from multiprocessing import cpu_count
+from os.path import exists
+
+import sh
+from pythonforandroid.recipe import Recipe
+from pythonforandroid.logger import shprint
+from pythonforandroid.util import current_directory
 
 
-class LibffiReleaseRecipe(_LibffiRecipe):
-    # Версия с готовым release-архивом (содержит ./configure).
+class LibffiRecipe(Recipe):
+    name = "libffi"
     version = "3.4.2"
-    # Важно: именно release-asset (.../releases/download/...), а не git-архив.
+    # Именно release-asset (.../releases/download/...), а НЕ git-архив:
+    # в нём уже лежит готовый ./configure.
     url = "https://github.com/libffi/libffi/releases/download/v{version}/libffi-{version}.tar.gz"
-    # Патчи штатного рецепта рассчитаны на git-раскладку; для release-
-    # тарбола они не нужны ␸ configure уже собран.
-    patches = []
+
+    built_libraries = {"libffi.so": ".libs"}
+
+    def build_arch(self, arch):
+        env = self.get_recipe_env(arch)
+        with current_directory(self.get_build_dir(arch.arch)):
+            # У release-тарбола configure уже есть — autogen не нужен.
+            if not exists("configure"):
+                shprint(sh.Command("./autogen.sh"), _env=env)
+            shprint(
+                sh.Command("./configure"),
+                "--host=" + arch.command_prefix,
+                "--prefix=" + self.get_build_dir(arch.arch),
+                "--disable-builddir",
+                "--enable-shared",
+                _env=env,
+            )
+            shprint(sh.make, "-j", str(cpu_count()), "libffi.la", _env=env)
 
 
-recipe = LibffiReleaseRecipe()
+recipe = LibffiRecipe()

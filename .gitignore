@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+venv/
+
+# Buildozer / Android
+.buildozer/
+.android/
+bin/
+*.apk
+*.aab
+
+# Рабочие каталоги приложения
+work/
+out/
+.env

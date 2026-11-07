@@ -11,7 +11,7 @@
 сгенерирован), поэтому autogen.sh/autoreconf не запускаются вообще.
 """
 from multiprocessing import cpu_count
-from os.path import exists
+from os.path import exists, join
 
 import sh
 from pythonforandroid.recipe import Recipe
@@ -43,6 +43,10 @@ class LibffiRecipe(Recipe):
                 _env=env,
             )
             shprint(sh.make, "-j", str(cpu_count()), "libffi.la", _env=env)
+
+    def get_include_dirs(self, arch):
+        # Рецепт python3 вызывает этот метод, чтобы подключить заголовки libffi.
+        return [join(self.get_build_dir(arch.arch), "include")]
 
 
 recipe = LibffiRecipe()

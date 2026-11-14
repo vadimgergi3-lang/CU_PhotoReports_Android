@@ -12,8 +12,10 @@ source.include_patterns = assets/*
 
 version = 2.0.0
 
-# Зависимости offline-приложения (без Telegram/aiogram)
-requirements = python3,kivy==2.3.0,pyjnius,android,pillow,lxml,python-docx,plyer
+# Важно: lxml и python-docx фиксируются на совместимых версиях для Python 3.11/Android-target.
+# Невязка между Cython 0.29.x и новой lxml на p4a оборачивается в ошибку компиляции
+# src/lxml/etree.c: incomplete definition of type 'struct _frame'.
+requirements = python3,kivy==2.3.0,pyjnius,android,pillow,lxml==5.2.2,python-docx==1.1.2,plyer
 
 orientation = portrait
 fullscreen = 0
